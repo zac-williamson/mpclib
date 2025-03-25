@@ -1,4 +1,4 @@
-mod shuffle;
+pub mod shuffle;
 mod benchmarks;
-mod common;
-mod selective_disclosure;
+pub mod common;
+pub mod selective_disclosure;

@@ -1,1 +1,1 @@
-pub(crate) mod selective_disclosure;
+pub mod selective_disclosure;

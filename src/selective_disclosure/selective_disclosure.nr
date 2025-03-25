@@ -22,10 +22,10 @@ global H: Point = Point {
 };
 
 pub struct RoundState<let NumEntries: u32, let NumParticipants: u32> {
-    round_number: u32,
-    user_encrypt_secret_hashes: [Field; NumParticipants],
-    user_mask_secret_hashes: [Field; NumParticipants],
-    previous_output_states: [UserOutputState<NumEntries, NumParticipants>; NumParticipants],
+    pub round_number: u32,
+    pub user_encrypt_secret_hashes: [Field; NumParticipants],
+    pub user_mask_secret_hashes: [Field; NumParticipants],
+    pub previous_output_states: [UserOutputState<NumEntries, NumParticipants>; NumParticipants],
 }
 
 pub struct UserOutputState<let NumEntries: u32, let NumParticipants: u32> {
@@ -168,7 +168,7 @@ pub fn reveal_mask<let N: u32>(
     possible_encryption_keys
 }
 
-fn create_round_commitments<let NumEntries: u32, let NumParticipants: u32>(
+pub fn create_round_commitments<let NumEntries: u32, let NumParticipants: u32>(
     user_plaintext: [Field; NumEntries],
     reveal_vector: [Field; NumEntries],
     encrypt_secret: Field,
@@ -190,7 +190,7 @@ fn create_round_commitments<let NumEntries: u32, let NumParticipants: u32>(
     r
 }
 
-fn consume_round_commitments<let NumEntries: u32, let NumParticipants: u32>(
+pub fn consume_round_commitments<let NumEntries: u32, let NumParticipants: u32>(
     masking_secret: Field,
     round_state: RoundState<NumEntries, NumParticipants>,
     user_index: u32,
@@ -216,20 +216,42 @@ fn consume_round_commitments<let NumEntries: u32, let NumParticipants: u32>(
     target_plaintexts
 }
 
+impl<let NumEntries: u32, let NumParticipants: u32> std::default::Default for RoundState<NumEntries, NumParticipants> {
+    fn default() -> Self {
+        RoundState {
+            round_number: 0,
+            user_encrypt_secret_hashes: [0; NumParticipants],
+            user_mask_secret_hashes: [0; NumParticipants],
+            previous_output_states: [UserOutputState::default(); NumParticipants],
+        }
+    }
+}
 impl<let NumEntries: u32, let NumParticipants: u32> RoundState<NumEntries, NumParticipants> {
 
     pub fn hash(self) -> Field {
-        let mut flattened_data: [Field; NumParticipants * 2 + 1] = [0; NumParticipants * 2 + 1];
+        let mut flattened_data: [Field; NumParticipants * 3 + 1] = [0; NumParticipants * 3 + 1];
 
         for i in 0..NumParticipants {
-            flattened_data[2 * i] = self.user_encrypt_secret_hashes[i];
-            flattened_data[2 * i + 1] = self.user_mask_secret_hashes[i];
+            flattened_data[3 * i] = self.user_encrypt_secret_hashes[i];
+            flattened_data[3 * i + 1] = self.user_mask_secret_hashes[i];
+            flattened_data[3 * i + 2] = self.previous_output_states[i].hash();
         }
-        flattened_data[NumParticipants * 2] = self.round_number as Field - 1;
+        flattened_data[NumParticipants * 3] = self.round_number as Field - 1;
 
-        std::hash::poseidon2::Poseidon2::hash(flattened_data, NumParticipants * 2 + 1)
+        std::hash::poseidon2::Poseidon2::hash(flattened_data, NumParticipants * 3 + 1)
     }
 
+    pub fn update2(
+        self,
+        new_output_state: UserOutputState<NumEntries, NumParticipants>,
+        user_index: u32,
+    ) -> Self {
+        let mut updated = self;
+
+        updated.round_number += 1;
+        updated.previous_output_states[user_index] = new_output_state;
+        updated
+    }
     pub fn update(
         self,
         new_output_states: [UserOutputState<NumEntries, NumParticipants>; NumParticipants],
