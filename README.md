@@ -51,7 +51,7 @@ let alice_mask: [bool; N];
 let bob_mask: [bool; N];
 
 let alice_data_to_bob: [Field];
-let bob_data_to_alice; [Field];
+let bob_data_to_alice: [Field];
 
 for i in 0..N {
     if (bob_mask[i] == true)
