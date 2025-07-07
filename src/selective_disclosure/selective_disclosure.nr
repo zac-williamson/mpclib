@@ -170,7 +170,7 @@ pub fn reveal_mask<let N: u32>(
 
 
 /// Alternative to `create_round_commitments` to bypass aztec-nargo compiler errors
-pub fn create_round_commitments_const<let NumEntries: u32, let NumParticipants: u32, let UserIndex: u32>(
+pub fn create_round_commitments_alternate<let NumEntries: u32, let NumParticipants: u32, let UserIndex: u32>(
     user_plaintext: [Field; NumEntries],
     reveal_vector: [Field; NumEntries],
     encrypt_secret: Field,
@@ -215,7 +215,7 @@ pub fn create_round_commitments<let NumEntries: u32, let NumParticipants: u32>(
 }
 
 /// Alternative to `consume_round_commitments` to bypass aztec-nargo compiler errors
-pub fn consume_round_commitments_const<let NumEntries: u32, let NumParticipants: u32, let UserIndex: u32>(
+pub fn consume_round_commitments_alternate<let NumEntries: u32, let NumParticipants: u32, let UserIndex: u32>(
     masking_secret: Field,
     round_state: RoundState<NumEntries, NumParticipants>,
 ) -> [[Option<Field>; NumEntries]; NumParticipants - 1] {
@@ -316,7 +316,7 @@ impl<let NumEntries: u32, let NumParticipants: u32> RoundState<NumEntries, NumPa
 }
 
 /// Alternative to `execute_round` to bypass aztec-nargo compiler errors
-pub fn execute_round_const<let NumEntries: u32, let NumParticipants: u32, let UserIndex: u32> (
+pub fn execute_round_alternate<let NumEntries: u32, let NumParticipants: u32, let UserIndex: u32> (
         user_plaintext: [Field; NumEntries],
     reveal_vector: [Field; NumEntries],
     encrypt_secret: Field,
@@ -337,7 +337,7 @@ pub fn execute_round_const<let NumEntries: u32, let NumParticipants: u32, let Us
         std::hash::poseidon2::Poseidon2::hash([masking_secret, -1], 2),
         round_state.user_mask_secret_hashes[UserIndex],
     );
-    let state = create_round_commitments_const::<NumEntries, NumParticipants, UserIndex>(
+    let state = create_round_commitments_alternate::<NumEntries, NumParticipants, UserIndex>(
         user_plaintext,
         reveal_vector,
         encrypt_secret,
@@ -345,7 +345,7 @@ pub fn execute_round_const<let NumEntries: u32, let NumParticipants: u32, let Us
         round_state,
     );
 
-    let plaintexts = consume_round_commitments_const::<NumEntries, NumParticipants, UserIndex>(masking_secret, round_state);
+    let plaintexts = consume_round_commitments_alternate::<NumEntries, NumParticipants, UserIndex>(masking_secret, round_state);
 
     (state, plaintexts)
 }
@@ -482,7 +482,7 @@ fn test_execute_round() {
 
 
 #[test]
-fn test_execute_round_const() {
+fn test_execute_round_alternate() {
     let alice_secret = std::hash::poseidon2::Poseidon2::hash([0], 1);
     let alice_mask = std::hash::poseidon2::Poseidon2::hash([1], 1);
     let bob_secret = std::hash::poseidon2::Poseidon2::hash([2], 1);
@@ -505,7 +505,7 @@ fn test_execute_round_const() {
     let bob_reveal = [1, 0, 1, 0];
 
     // after executing. we have ciphertexts and mask commitments, but no mask reveal commitments
-    let alice_output = execute_round_const::<_,_,0>(
+    let alice_output = execute_round_alternate::<_,_,0>(
         alice_state,
         alice_reveal,
         alice_secret,
@@ -517,7 +517,7 @@ fn test_execute_round_const() {
     let round_state = round_state.update([alice_output.0, round_state.previous_output_states[1]]);
     let previous_round_hash = round_state.hash();
 
-    let bob_output = execute_round_const::<_,_,1>(
+    let bob_output = execute_round_alternate::<_,_,1>(
         bob_state,
         bob_reveal,
         bob_secret,
@@ -529,7 +529,7 @@ fn test_execute_round_const() {
     let round_state = round_state.update([round_state.previous_output_states[0], bob_output.0]);
     let previous_round_hash = round_state.hash();
 
-    let alice_output = execute_round_const::<_,_,0>(
+    let alice_output = execute_round_alternate::<_,_,0>(
         alice_state,
         alice_reveal,
         alice_secret,
@@ -541,7 +541,7 @@ fn test_execute_round_const() {
     let round_state = round_state.update([alice_output.0, round_state.previous_output_states[1]]);
     let previous_round_hash = round_state.hash();
 
-    let bob_output = execute_round_const::<_,_,1>(
+    let bob_output = execute_round_alternate::<_,_,1>(
         bob_state,
         bob_reveal,
         bob_secret,
