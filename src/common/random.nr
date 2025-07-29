@@ -3,8 +3,8 @@ use crate::common::crypto::expand_secret;
 /// Given a uniformly randomly distribted field element `input_randomness`, return a set of uniformly randomly distributed indices `r`
 /// such that `r[i]` is uniformly randomly distributed such that `0 <= r[i] <= i`
 /// Note: we use this algorithm to compute inputs into the Fisher-Yates shuffle algorithm
-pub(crate) fn convert_scalar_into_random_u16s<let N: u32>(input_randomness: Field) -> [u16; N] {
-    let mut r: [u16; N] = [0; N];
+pub(crate) fn convert_scalar_into_random_u32s<let N: u32>(input_randomness: Field) -> [u32; N] {
+    let mut r: [u32; N] = [0; N];
     // note: std::field::modulus_num_bits() is not known at compile time so I am uncertain how to implement this algo generically
     assert(
         std::field::modulus_num_bits() > 240,
@@ -29,8 +29,8 @@ pub(crate) fn convert_scalar_into_random_u16s<let N: u32>(input_randomness: Fiel
         // NOTE: I don't know how to make to_be_bytes field agnostic. I need the length parameter `32` to equal the smallest number of bytes that fits into a std::field
         let bits: [u8; 32] = entropy[i].to_be_bytes();
         for j in 0..15 {
-            let digit: u16 = bits[j * 2 + 1] as u16 + (bits[j * 2]) as u16 * 0x100;
-            let modulus = (i * 15 + j + 1) as u16;
+            let digit: u32 = bits[j * 2 + 1] as u32 + (bits[j * 2]) as u32 * 0x100;
+            let modulus = (i * 15 + j + 1) as u32;
             // sanity check - this costs way too many constraints if modulus is not constant!
             assert_constant(modulus);
             let value = digit % modulus;
@@ -43,8 +43,8 @@ pub(crate) fn convert_scalar_into_random_u16s<let N: u32>(input_randomness: Fiel
     let last_bits: [u8; 32] = last_entropy.to_be_bytes();
     // let ff: [u8; 8] = entropy[num_full_limbs].to_be_bytes::<8>();
     for j in 0..num_remaining_bits {
-        let digit: u16 = last_bits[j * 2 + 1] as u16 + (last_bits[j * 2]) as u16 * 0x100;
-        let value = digit % (num_full_limbs * 15 + j + 1) as u16;
+        let digit: u32 = last_bits[j * 2 + 1] as u32 + (last_bits[j * 2]) as u32 * 0x100;
+        let value = digit % (num_full_limbs * 15 + j + 1) as u32;
         r[num_full_limbs * 15 + j] = value;
     }
     r

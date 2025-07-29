@@ -2,7 +2,7 @@ use crate::common::bignum_utils::convert_bn254_to_embedded_scalar;
 use crate::common::fisher_yates_shuffle::fisher_yates_shuffle_from_secret;
 use crate::shuffle::generators::INDEX_GENERATORS;
 
-use bignum::{BigNumTrait, BN254_Fq};
+use bignum::{BigNum, BN254_Fq};
 use std::embedded_curve_ops::{EmbeddedCurvePoint as Point, EmbeddedCurveScalar, multi_scalar_mul};
 
 /// ShuffleData contains the data and metadata we need to track the Shuffle MPC protocol
@@ -45,8 +45,7 @@ impl<let N: u32, let NumParticipants: u32> ShuffleData<N, NumParticipants> {
         }
 
         // https://eprint.iacr.org/2009/439.pdf
-
-        let shuffled_indices: [Field; N] = fisher_yates_shuffle_from_secret(user_secret);
+        let shuffled_indices: [u32; N] = fisher_yates_shuffle_from_secret(user_secret);
 
         let mut shuffled_commitments: [Point; N] = [Point::point_at_infinity(); N];
         for i in 0..N {

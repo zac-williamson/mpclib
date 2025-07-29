@@ -2,7 +2,7 @@ use crate::common::crypto::{Ciphertext, expand_secret, trial_decrypt};
 use crate::selective_disclosure::selective_disclosure::{
     commit, commit_mask, execute_round, H, reveal_mask, RoundState, update_mask, UserOutputState,
 };
-use bignum::{BigNumTrait, BN254_Fq};
+use bignum::{BN254_Fq};
 use std::embedded_curve_ops::{
     EmbeddedCurvePoint, EmbeddedCurveScalar, fixed_base_scalar_mul, multi_scalar_mul,
 };
@@ -223,7 +223,8 @@ fn round_1_commit(
         assert_eq(result, 1234);
     }
     let mut new_board_state = board_state;
-    new_board_state[board_update_index] = board_update_value;
+    // TODO: conversion to u32 is expensive. fix interface
+    new_board_state[board_update_index as u32] = board_update_value;
     let alice_ciphertext = commit(board_state, alice_encrypt_secret);
     (mask_commits_to_bob, updated_mask_for_bob, alice_ciphertext)
 }

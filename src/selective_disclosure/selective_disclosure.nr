@@ -5,7 +5,7 @@ use std::hash::poseidon2::Poseidon2::hash as poseidon2;
 
 use crate::common::crypto::{Ciphertext, expand_secret, symmetric_encrypt, trial_decrypt};
 
-use bignum::{BigNumTrait, BN254_Fq};
+use bignum::{BigNum, BN254_Fq};
 
 type Point = EmbeddedCurvePoint;
 
@@ -219,7 +219,7 @@ pub fn consume_round_commitments_alternate<let NumEntries: u32, let NumParticipa
     masking_secret: Field,
     round_state: RoundState<NumEntries, NumParticipants>,
 ) -> [[Option<Field>; NumEntries]; NumParticipants - 1] {
-    let mut count: Field = 0;
+    let mut count: u32 = 0;
 
     let mut target_plaintexts: [[Option<Field>; NumEntries]; NumParticipants - 1] =
         [[Option::default(); NumEntries]; NumParticipants - 1];
@@ -246,7 +246,7 @@ pub fn consume_round_commitments<let NumEntries: u32, let NumParticipants: u32>(
     round_state: RoundState<NumEntries, NumParticipants>,
     user_index: u32,
 ) -> [[Option<Field>; NumEntries]; NumParticipants - 1] {
-    let mut count: Field = 0;
+    let mut count: u32 = 0;
 
     let mut target_plaintexts: [[Option<Field>; NumEntries]; NumParticipants - 1] =
         [[Option::default(); NumEntries]; NumParticipants - 1];
