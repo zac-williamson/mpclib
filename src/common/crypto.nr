@@ -3,7 +3,7 @@ pub(crate) fn expand_secret<let N: u32>(secret: Field) -> [Field; N] {
     let mut rolling_secret: [Field; 2] = [0, secret];
     let mut r: [Field; N] = [0; N];
     for i in 0..N {
-        r[i] = std::hash::poseidon2::Poseidon2::hash(rolling_secret, 2);
+        r[i] = poseidon::poseidon2::Poseidon2::hash(rolling_secret, 2);
         rolling_secret[1] += 1;
     }
     r
@@ -44,7 +44,7 @@ pub(crate) fn symmetric_decrypt(
 use std::embedded_curve_ops::EmbeddedCurvePoint as Point;
 
 pub struct Ciphertext<let N: u32> {
-    data: [Field; N * 2],
+    pub data: [Field; N * 2],
 }
 
 impl<let N: u32> std::default::Default for Ciphertext<N> {

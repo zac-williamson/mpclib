@@ -1,11 +1,12 @@
 use std::embedded_curve_ops::{
     embedded_curve_add_unsafe, EmbeddedCurvePoint, EmbeddedCurveScalar, multi_scalar_mul,
 };
-use std::hash::poseidon2::Poseidon2::hash as poseidon2;
+use poseidon::poseidon2::Poseidon2::hash as poseidon2;
 
 use crate::common::crypto::{Ciphertext, expand_secret, symmetric_encrypt, trial_decrypt};
 
-use bignum::{BigNum, BN254_Fq};
+
+use bignum::{BigNum, fields::bn254Fq::BN254_Fq};
 
 type Point = EmbeddedCurvePoint;
 
@@ -15,7 +16,7 @@ pub global G: Point = Point {
     is_infinite: false,
 };
 
-global H: Point = Point {
+pub global H: Point = Point {
     x: 0x054aa86a73cb8a34525e5bbed6e43ba1198e860f5f3950268f71df4591bde402,
     y: 0x209dcfbf2cfb57f9f6046f44d71ac6faf87254afc7407c04eb621a6287cac126,
     is_infinite: false,
@@ -46,9 +47,25 @@ impl<let NumEntries: u32, let NumParticipants: u32> std::default::Default for Us
     }
 }
 
+impl<let NumEntries: u32, let NumParticipants: u32> Eq for UserOutputState<NumEntries, NumParticipants> {
+    fn eq(self, other: Self) -> bool {
+        let mut r: bool = true;
+        for i in 0..NumEntries {
+            r &= self.ciphertext.data[i * 2] == other.ciphertext.data[i * 2];
+            r &= self.ciphertext.data[i * 2 + 1] == other.ciphertext.data[i * 2 + 1];
+            r &= self.mask_commitments[i] == other.mask_commitments[i];
+            for j in 0..NumParticipants
+            {
+                r &= (self.user_updated_mask_commitments[j][i] == other.user_updated_mask_commitments[j][i]);
+            }
+        }
+        r
+    }
+}
+
 impl<let NumEntries: u32, let NumParticipants: u32> UserOutputState<NumEntries, NumParticipants> {
 
-    pub fn flatten(self: Self) -> [Field; NumEntries * (NumParticipants + 2) * 2] {
+    pub fn serialize(self: Self) -> [Field; NumEntries * (NumParticipants + 2) * 2] {
         let mut flattened_data: [Field; NumEntries * (NumParticipants + 2) * 2] =
             [0; NumEntries * (NumParticipants + 2) * 2];
 
@@ -72,9 +89,50 @@ impl<let NumEntries: u32, let NumParticipants: u32> UserOutputState<NumEntries, 
         }
         flattened_data
     }
+
+    pub fn deserialize(input: [Field; NumEntries * (NumParticipants + 2) * 2]) -> Self {
+        let mut result: UserOutputState<NumEntries, NumParticipants> = UserOutputState::default();
+        for i in 0..NumEntries {
+            result.ciphertext.data[2 * i] = input[i * 2];
+            result.ciphertext.data[2 * i + 1] = input[i * 2 + 1];
+            result.mask_commitments[i].x = input[NumEntries * 2 + i * 2];
+            result.mask_commitments[i].y = input[NumEntries * 2 + i * 2 + 1];
+            result.mask_commitments[i].is_infinite = (result.mask_commitments[i].x == 0) & (result.mask_commitments[i].y == 0);
+            // TODO: -17 is magic number due to the curve formula of Grumpkin.
+            // ideally we should have the embedded curve formula be a param from the backend, as well as the `b` variable
+            let on_curve: Field =
+                ((result.mask_commitments[i].x
+                    * result.mask_commitments[i].x
+                    * result.mask_commitments[i].x)
+                    - 17 -
+                (result.mask_commitments[i].y * result.mask_commitments[i].y) == 0) as Field;
+            assert_eq(on_curve + (result.mask_commitments[i].is_infinite as Field) - (on_curve * (result.mask_commitments[i].is_infinite as Field)),  1);
+        }
+
+        let offset: u32 = NumEntries * 4;
+        for i in 0..NumParticipants {
+            for j in 0..NumEntries {
+                result.user_updated_mask_commitments[i][j].x =
+                    input[offset + (i * NumEntries * 2) + j * 2];
+                result.user_updated_mask_commitments[i][j].y =
+                    input[offset + (i * NumEntries * 2) + j * 2 + 1];
+                result.user_updated_mask_commitments[i][j].is_infinite = (result.user_updated_mask_commitments[i][j].x == 0) & (result.user_updated_mask_commitments[i][j].y == 0);
+
+            let on_curve: Field =
+                (result.user_updated_mask_commitments[i][j].x
+                    * result.user_updated_mask_commitments[i][j].x
+                    * result.user_updated_mask_commitments[i][j].x
+                    - 17 -
+                result.user_updated_mask_commitments[i][j].y * result.user_updated_mask_commitments[i][j].y == 0) as Field;
+                    let c = result.user_updated_mask_commitments[i][j];
+                assert_eq(on_curve + (result.user_updated_mask_commitments[i][j].is_infinite as Field) - (on_curve * result.user_updated_mask_commitments[i][j].is_infinite as Field),  1);
+            }
+        }
+        result
+    }
     pub fn hash(self: Self) -> Field {
-        std::hash::poseidon2::Poseidon2::hash(
-            self.flatten(),
+        poseidon::poseidon2::Poseidon2::hash(
+            self.serialize(),
             NumEntries * (NumParticipants + 2) * 2,
         )
     }
@@ -148,7 +206,7 @@ pub fn reveal_mask<let N: u32>(
 
     let mut possible_encryption_keys: [Point; N] = [Point::point_at_infinity(); N];
     for i in 0..N {
-        let bit_limbs = inverse_masking_secrets[i].limbs;
+        let bit_limbs = inverse_masking_secrets[i].get_limbs();
         // 120, 120, 120
         let low_120 = bit_limbs[0] as Field;
         let mid_120 = bit_limbs[1] as Field;
@@ -167,7 +225,6 @@ pub fn reveal_mask<let N: u32>(
     }
     possible_encryption_keys
 }
-
 
 /// Alternative to `create_round_commitments` to bypass aztec-nargo compiler errors
 pub fn create_round_commitments_alternate<let NumEntries: u32, let NumParticipants: u32, let UserIndex: u32>(
@@ -190,7 +247,6 @@ pub fn create_round_commitments_alternate<let NumEntries: u32, let NumParticipan
     r.mask_commitments = commit_mask(reveal_vector, masking_secret);
     r
 }
-
 
 pub fn create_round_commitments<let NumEntries: u32, let NumParticipants: u32>(
     user_plaintext: [Field; NumEntries],
@@ -240,7 +296,6 @@ pub fn consume_round_commitments_alternate<let NumEntries: u32, let NumParticipa
     target_plaintexts
 }
 
-
 pub fn consume_round_commitments<let NumEntries: u32, let NumParticipants: u32>(
     masking_secret: Field,
     round_state: RoundState<NumEntries, NumParticipants>,
@@ -277,7 +332,61 @@ impl<let NumEntries: u32, let NumParticipants: u32> std::default::Default for Ro
         }
     }
 }
+
+impl<let NumEntries: u32, let NumParticipants: u32> Eq for RoundState<NumEntries, NumParticipants> {
+    fn eq(self, other: Self) -> bool {
+        let mut r: bool = true;
+        for i in 0..NumParticipants {
+            r &= self.previous_output_states[i] == other.previous_output_states[i];
+            r &= self.user_encrypt_secret_hashes[i] == other.user_encrypt_secret_hashes[i];
+            r &= self.user_mask_secret_hashes[i] == other.user_mask_secret_hashes[i];
+        }
+        r
+    }
+}
 impl<let NumEntries: u32, let NumParticipants: u32> RoundState<NumEntries, NumParticipants> {
+
+    pub fn serialize(self) -> [Field; (NumParticipants * 3) + (NumParticipants * NumEntries * (NumParticipants + 2) * 2)] {
+        let mut result =  [0; NumParticipants * 3 + NumParticipants * NumEntries * (NumParticipants + 2) * 2];
+
+        let mut idx: u32 = 0;
+        for i in 0..NumParticipants {
+        let user_serialized = self.previous_output_states[i].serialize();
+            for element in user_serialized {
+                result[idx] = element;
+                idx += 1;
+            }
+        }
+        for i in 0..NumParticipants {
+            result[idx] = self.user_encrypt_secret_hashes[i];
+            idx += 1;
+            result[idx] = self.user_mask_secret_hashes[i];
+            idx += 1;
+        }
+        result[idx] = self.round_number as Field;
+        result
+    }
+
+    pub fn deserialize(input: [Field; (NumParticipants * 3) + (NumParticipants * NumEntries * (NumParticipants + 2) * 2)]) -> Self {
+        let mut result: RoundState<NumEntries, NumParticipants> = RoundState::default();
+        let mut idx: u32 = 0;
+        for i in 0..NumParticipants {
+            let mut user_serialized: [Field; NumEntries * (NumParticipants + 2) * 2] = [0; NumEntries * (NumParticipants + 2) * 2];
+            for j in 0.. NumEntries * (NumParticipants + 2) * 2{
+                user_serialized[j] = input[idx];
+                idx += 1;
+            }
+            result.previous_output_states[i] = UserOutputState::deserialize(user_serialized);
+        }
+        for i in 0..NumParticipants {
+            result.user_encrypt_secret_hashes[i] = input[idx];
+            idx += 1;
+             result.user_mask_secret_hashes[i] = input[idx];
+            idx += 1;
+        }
+        result.round_number = input[idx] as u32;
+        result
+    }
 
     pub fn hash(self) -> Field {
         let mut flattened_data: [Field; NumParticipants * 3 + 1] = [0; NumParticipants * 3 + 1];
@@ -289,7 +398,7 @@ impl<let NumEntries: u32, let NumParticipants: u32> RoundState<NumEntries, NumPa
         }
         flattened_data[NumParticipants * 3] = self.round_number as Field - 1;
 
-        std::hash::poseidon2::Poseidon2::hash(flattened_data, NumParticipants * 3 + 1)
+        poseidon::poseidon2::Poseidon2::hash(flattened_data, NumParticipants * 3 + 1)
     }
 
     pub fn update2(
@@ -316,25 +425,23 @@ impl<let NumEntries: u32, let NumParticipants: u32> RoundState<NumEntries, NumPa
 }
 
 /// Alternative to `execute_round` to bypass aztec-nargo compiler errors
-pub fn execute_round_alternate<let NumEntries: u32, let NumParticipants: u32, let UserIndex: u32> (
-        user_plaintext: [Field; NumEntries],
+pub fn execute_round_alternate<let NumEntries: u32, let NumParticipants: u32, let UserIndex: u32>(
+    user_plaintext: [Field; NumEntries],
     reveal_vector: [Field; NumEntries],
     encrypt_secret: Field,
     masking_secret: Field,
     round_state: RoundState<NumEntries, NumParticipants>,
     previous_round_hash: Field,
-)->
-(UserOutputState<NumEntries, NumParticipants>, [[Option<Field>; NumEntries]; NumParticipants - 1])
-{
+    ) -> (UserOutputState<NumEntries, NumParticipants>, [[Option<Field>; NumEntries]; NumParticipants - 1]) {
     // when used inside a Noir program, previous_round_hash should be sourced from a pub variable
     assert_eq(previous_round_hash, round_state.hash());
 
     assert_eq(
-        std::hash::poseidon2::Poseidon2::hash([encrypt_secret, -1], 2),
+        poseidon2([encrypt_secret, -1], 2),
         round_state.user_encrypt_secret_hashes[UserIndex],
     );
     assert_eq(
-        std::hash::poseidon2::Poseidon2::hash([masking_secret, -1], 2),
+        poseidon2([masking_secret, -1], 2),
         round_state.user_mask_secret_hashes[UserIndex],
     );
     let state = create_round_commitments_alternate::<NumEntries, NumParticipants, UserIndex>(
@@ -345,7 +452,10 @@ pub fn execute_round_alternate<let NumEntries: u32, let NumParticipants: u32, le
         round_state,
     );
 
-    let plaintexts = consume_round_commitments_alternate::<NumEntries, NumParticipants, UserIndex>(masking_secret, round_state);
+    let plaintexts = consume_round_commitments_alternate::<NumEntries, NumParticipants, UserIndex>(
+        masking_secret,
+        round_state,
+    );
 
     (state, plaintexts)
 }
@@ -365,11 +475,11 @@ pub fn execute_round<let NumEntries: u32, let NumParticipants: u32>(
     assert_eq(previous_round_hash, round_state.hash());
 
     assert_eq(
-        std::hash::poseidon2::Poseidon2::hash([encrypt_secret, -1], 2),
+        poseidon2([encrypt_secret, -1], 2),
         round_state.user_encrypt_secret_hashes[user_index],
     );
     assert_eq(
-        std::hash::poseidon2::Poseidon2::hash([masking_secret, -1], 2),
+        poseidon2([masking_secret, -1], 2),
         round_state.user_mask_secret_hashes[user_index],
     );
     let state = create_round_commitments(
@@ -388,11 +498,14 @@ pub fn execute_round<let NumEntries: u32, let NumParticipants: u32>(
 
 
 #[test]
-fn test_execute_round() {
-    let alice_secret = std::hash::poseidon2::Poseidon2::hash([0], 1);
-    let alice_mask = std::hash::poseidon2::Poseidon2::hash([1], 1);
-    let bob_secret = std::hash::poseidon2::Poseidon2::hash([2], 1);
-    let bob_mask = std::hash::poseidon2::Poseidon2::hash([3], 1);
+fn test_flatten() {
+    // let plaintext: [Field; 4] = [0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, 123, -1, -0x23476239845723746];
+    // let reveal_vector: [Field; 4] = [0, 1, 2, 3];
+
+    let alice_secret = poseidon2([0], 1);
+    let alice_mask = poseidon2([1], 1);
+    let bob_secret = poseidon2([2], 1);
+    let bob_mask = poseidon2([3], 1);
 
     let round_state: RoundState<4, 2> = RoundState {
         round_number: 1,
@@ -418,7 +531,7 @@ fn test_execute_round() {
         alice_mask,
         round_state,
         previous_round_hash,
-        0
+        0,
     );
 
     let round_state = round_state.update([alice_output.0, round_state.previous_output_states[1]]);
@@ -431,7 +544,77 @@ fn test_execute_round() {
         bob_mask,
         round_state,
         previous_round_hash,
-        1
+        1,
+    );
+
+
+    let round_state = round_state.update([round_state.previous_output_states[0], bob_output.0]);
+    let previous_round_hash = round_state.hash();
+
+    let alice_output = execute_round(
+        alice_state,
+        alice_reveal,
+        alice_secret,
+        alice_mask,
+        round_state,
+        previous_round_hash,
+        0,
+    );
+
+
+    let flat = alice_output.0.serialize();
+    let result_state: UserOutputState<4, 2> = UserOutputState::deserialize(flat);
+
+    let flat_round = round_state.serialize();
+    let result_round : RoundState<4, 2> = RoundState::<4,2>::deserialize(flat_round);
+    assert_eq(round_state, result_round);
+    assert_eq(alice_output.0, result_state);
+}
+
+fn test_execute_round() {
+    let alice_secret = poseidon2([0], 1);
+    let alice_mask = poseidon2([1], 1);
+    let bob_secret = poseidon2([2], 1);
+    let bob_mask = poseidon2([3], 1);
+
+    let round_state: RoundState<4, 2> = RoundState {
+        round_number: 1,
+        user_encrypt_secret_hashes: [
+            poseidon2([alice_secret, -1], 2),
+            poseidon2([bob_secret, -1], 2),
+        ],
+        user_mask_secret_hashes: [poseidon2([alice_mask, -1], 2), poseidon2([bob_mask, -1], 2)],
+        previous_output_states: [UserOutputState::default(); 2],
+    };
+
+    let previous_round_hash = round_state.hash();
+    let alice_state = [0, 1, 2, 3];
+    let alice_reveal = [0, 1, 0, 1];
+    let bob_state = [-1, -2, -3, -4];
+    let bob_reveal = [1, 0, 1, 0];
+
+    // after executing. we have ciphertexts and mask commitments, but no mask reveal commitments
+    let alice_output = execute_round(
+        alice_state,
+        alice_reveal,
+        alice_secret,
+        alice_mask,
+        round_state,
+        previous_round_hash,
+        0,
+    );
+
+    let round_state = round_state.update([alice_output.0, round_state.previous_output_states[1]]);
+    let previous_round_hash = round_state.hash();
+
+    let bob_output = execute_round(
+        bob_state,
+        bob_reveal,
+        bob_secret,
+        bob_mask,
+        round_state,
+        previous_round_hash,
+        1,
     );
 
     let round_state = round_state.update([round_state.previous_output_states[0], bob_output.0]);
@@ -444,7 +627,7 @@ fn test_execute_round() {
         alice_mask,
         round_state,
         previous_round_hash,
-        0
+        0,
     );
 
     let round_state = round_state.update([alice_output.0, round_state.previous_output_states[1]]);
@@ -457,7 +640,7 @@ fn test_execute_round() {
         bob_mask,
         round_state,
         previous_round_hash,
-        1
+        1,
     );
 
     let alice_decrypted = alice_output.1[0];
@@ -480,13 +663,12 @@ fn test_execute_round() {
     assert_eq(bob_decrypted[2].unwrap_unchecked(), 2);
 }
 
-
 #[test]
 fn test_execute_round_alternate() {
-    let alice_secret = std::hash::poseidon2::Poseidon2::hash([0], 1);
-    let alice_mask = std::hash::poseidon2::Poseidon2::hash([1], 1);
-    let bob_secret = std::hash::poseidon2::Poseidon2::hash([2], 1);
-    let bob_mask = std::hash::poseidon2::Poseidon2::hash([3], 1);
+    let alice_secret = poseidon2([0], 1);
+    let alice_mask = poseidon2([1], 1);
+    let bob_secret = poseidon2([2], 1);
+    let bob_mask = poseidon2([3], 1);
 
     let round_state: RoundState<4, 2> = RoundState {
         round_number: 1,
@@ -505,7 +687,7 @@ fn test_execute_round_alternate() {
     let bob_reveal = [1, 0, 1, 0];
 
     // after executing. we have ciphertexts and mask commitments, but no mask reveal commitments
-    let alice_output = execute_round_alternate::<_,_,0>(
+    let alice_output = execute_round_alternate::<_, _, 0>(
         alice_state,
         alice_reveal,
         alice_secret,
@@ -517,7 +699,7 @@ fn test_execute_round_alternate() {
     let round_state = round_state.update([alice_output.0, round_state.previous_output_states[1]]);
     let previous_round_hash = round_state.hash();
 
-    let bob_output = execute_round_alternate::<_,_,1>(
+    let bob_output = execute_round_alternate::<_, _, 1>(
         bob_state,
         bob_reveal,
         bob_secret,
@@ -529,7 +711,7 @@ fn test_execute_round_alternate() {
     let round_state = round_state.update([round_state.previous_output_states[0], bob_output.0]);
     let previous_round_hash = round_state.hash();
 
-    let alice_output = execute_round_alternate::<_,_,0>(
+    let alice_output = execute_round_alternate::<_, _, 0>(
         alice_state,
         alice_reveal,
         alice_secret,
@@ -541,7 +723,7 @@ fn test_execute_round_alternate() {
     let round_state = round_state.update([alice_output.0, round_state.previous_output_states[1]]);
     let previous_round_hash = round_state.hash();
 
-    let bob_output = execute_round_alternate::<_,_,1>(
+    let bob_output = execute_round_alternate::<_, _, 1>(
         bob_state,
         bob_reveal,
         bob_secret,
@@ -576,9 +758,9 @@ fn smoke_test() {
     let plaintext: [Field; 3] = [0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, 123, -1];
     let bob_reveal_vector: [Field; 3] = [0, 1, 1];
 
-    let alice_encrypt_secret: Field = std::hash::poseidon2::Poseidon2::hash([0], 1);
+    let alice_encrypt_secret: Field = poseidon2([0], 1);
 
-    let bob_masking_secret: Field = std::hash::poseidon2::Poseidon2::hash([2], 1);
+    let bob_masking_secret: Field = poseidon2([2], 1);
 
     // Round 1a: Alice generates the ciphertext that describes her hidden state, sends to Bob
     let ciphertext = commit(plaintext, alice_encrypt_secret);

@@ -58,7 +58,7 @@ impl<let N: u32, let NumParticipants: u32> ShuffleData<N, NumParticipants> {
         assert_eq(self.shuffle_receipts[user_index], false, "user has already shuffled!");
         assert_eq(
             self.user_key_hashes[user_index],
-            std::hash::poseidon2::Poseidon2::hash([user_secret], 1),
+            poseidon::poseidon2::Poseidon2::hash([user_secret], 1),
             "user secret does not match committed hash",
         );
         let mut output_data = self;
@@ -163,7 +163,7 @@ fn unblind_and_determine_index<let N: u32, let NumItems: u32, let NumParticipant
 ) -> [u32; NumItems] {
     assert_eq(
         data.user_key_hashes[user_index],
-        std::hash::poseidon2::Poseidon2::hash([user_secret], 1),
+        poseidon::poseidon2::Poseidon2::hash([user_secret], 1),
         "user secret does not match committed hash",
     );
 
@@ -203,11 +203,11 @@ fn determine_index<let N: u32>(unblinded_commitment: Point) -> u32 {
 
 #[test]
 fn test_shuffle_2pc() {
-    let alice_secret = std::hash::poseidon2::Poseidon2::hash([0], 1);
-    let bob_secret = std::hash::poseidon2::Poseidon2::hash([2], 1);
+    let alice_secret = poseidon::poseidon2::Poseidon2::hash([0], 1);
+    let bob_secret = poseidon::poseidon2::Poseidon2::hash([2], 1);
     let secret_hashes: [Field; 2] = [
-        std::hash::poseidon2::Poseidon2::hash([alice_secret], 1),
-        std::hash::poseidon2::Poseidon2::hash([bob_secret], 1),
+        poseidon::poseidon2::Poseidon2::hash([alice_secret], 1),
+        poseidon::poseidon2::Poseidon2::hash([bob_secret], 1),
     ];
     let mut shuffle_data: ShuffleData<8, 2> = ShuffleData::new(secret_hashes);
 
@@ -239,19 +239,19 @@ fn test_shuffle_2pc() {
 #[test]
 fn test_poker_5players() {
     let player_secrets: [Field; 5] = [
-        std::hash::poseidon2::Poseidon2::hash([8], 1),
-        std::hash::poseidon2::Poseidon2::hash([1], 1),
-        std::hash::poseidon2::Poseidon2::hash([2], 1),
-        std::hash::poseidon2::Poseidon2::hash([3], 1),
-        std::hash::poseidon2::Poseidon2::hash([4], 1),
+        poseidon::poseidon2::Poseidon2::hash([8], 1),
+        poseidon::poseidon2::Poseidon2::hash([1], 1),
+        poseidon::poseidon2::Poseidon2::hash([2], 1),
+        poseidon::poseidon2::Poseidon2::hash([3], 1),
+        poseidon::poseidon2::Poseidon2::hash([4], 1),
     ];
 
     let secret_hashes: [Field; 5] = [
-        std::hash::poseidon2::Poseidon2::hash([player_secrets[0]], 1),
-        std::hash::poseidon2::Poseidon2::hash([player_secrets[1]], 1),
-        std::hash::poseidon2::Poseidon2::hash([player_secrets[2]], 1),
-        std::hash::poseidon2::Poseidon2::hash([player_secrets[3]], 1),
-        std::hash::poseidon2::Poseidon2::hash([player_secrets[4]], 1),
+        poseidon::poseidon2::Poseidon2::hash([player_secrets[0]], 1),
+        poseidon::poseidon2::Poseidon2::hash([player_secrets[1]], 1),
+        poseidon::poseidon2::Poseidon2::hash([player_secrets[2]], 1),
+        poseidon::poseidon2::Poseidon2::hash([player_secrets[3]], 1),
+        poseidon::poseidon2::Poseidon2::hash([player_secrets[4]], 1),
     ];
 
     let mut shuffle_data: ShuffleData<52, _> = ShuffleData::new(secret_hashes);

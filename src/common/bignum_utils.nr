@@ -1,9 +1,12 @@
-use bignum::BN254_Fq;
 use std::embedded_curve_ops::EmbeddedCurveScalar;
+
+use dep::bignum::BigNum;
+use dep::bignum::fields::bn254Fq::BN254_Fq;
 
 /// Convert a BN254_Fq element (from bignum library) into an EmbeddedCurveScalar (used as input into multiscalar muls)
 pub(crate) fn convert_bn254_to_embedded_scalar(bignum: BN254_Fq) -> EmbeddedCurveScalar {
-    let bit_limbs = bignum.limbs;
+
+    let bit_limbs = bignum.get_limbs();
     let low_120 = bit_limbs[0] as Field;
     let mid_120 = bit_limbs[1] as Field;
     let mid_bytes = (mid_120 as Field).to_le_bytes::<15>();
