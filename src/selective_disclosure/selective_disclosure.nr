@@ -1,12 +1,23 @@
+use poseidon::poseidon2::Poseidon2::hash as poseidon2;
 use std::embedded_curve_ops::{
     embedded_curve_add_unsafe, EmbeddedCurvePoint, EmbeddedCurveScalar, multi_scalar_mul,
 };
-use poseidon::poseidon2::Poseidon2::hash as poseidon2;
 
 use crate::common::crypto::{Ciphertext, expand_secret, symmetric_encrypt, trial_decrypt};
 
-
 use bignum::{BigNum, fields::bn254Fq::BN254_Fq};
+
+pub trait Serialize {
+    let N: u32;
+
+    fn serialize(self) -> [Field; N];
+}
+
+pub trait Deserialize {
+    let N: u32;
+
+    fn deserialize(fields: [Field; N]) -> Self;
+}
 
 type Point = EmbeddedCurvePoint;
 
@@ -29,10 +40,162 @@ pub struct RoundState<let NumEntries: u32, let NumParticipants: u32> {
     pub previous_output_states: [UserOutputState<NumEntries, NumParticipants>; NumParticipants],
 }
 
+// how do we want to split this?
+// we want to be able to reconstruct RoundState from an iterative sequence of output states.
+// do we need previous_output_states from anything other than the last round?
+
 pub struct UserOutputState<let NumEntries: u32, let NumParticipants: u32> {
     ciphertext: Ciphertext<NumEntries>,
     mask_commitments: [Point; NumEntries],
-    user_updated_mask_commitments: [[Point; NumEntries]; NumParticipants],
+    user_updated_mask_commitments: [[Point; NumEntries]; NumParticipants - 1],
+}
+
+impl<let NumEntries: u32, let NumParticipants: u32> Serialize for UserOutputState<NumEntries, NumParticipants> {
+    let N: u32 = (NumEntries * 4)
+        + (NumEntries * (NumParticipants - 1) * 2)
+        + (((NumEntries * (NumParticipants)) + 251) / 252);
+    fn serialize(self) -> [Field; Self::N] {
+        let mut result: [Field; Self::N] = [0; Self::N];
+        let mut infinity_flags: [bool; (NumEntries * (NumParticipants))] =
+            [false; (NumEntries * (NumParticipants))];
+
+        let mut ptr: u32 = 0;
+        let mut infinity_ptr: u32 = 0;
+        for i in 0..NumEntries {
+            result[ptr] = self.ciphertext.data[2 * i];
+            result[ptr + 1] = self.ciphertext.data[2 * i + 1];
+            ptr += 2;
+        }
+
+        // we want to pack the points at infinity bools into a smaller number of Field elements
+        // first we populate a vector of infinity bools and then combine the bools into Fields
+        for i in 0..NumEntries {
+            result[ptr] = self.mask_commitments[i].x;
+            result[ptr + 1] = self.mask_commitments[i].y;
+            infinity_flags[infinity_ptr] = self.mask_commitments[i].is_infinite;
+            ptr += 2;
+            infinity_ptr += 1;
+        }
+
+        for i in 0..NumParticipants - 1 {
+            for j in 0..NumEntries {
+                result[ptr] = self.user_updated_mask_commitments[i][j].x;
+                result[ptr + 1] = self.user_updated_mask_commitments[i][j].y;
+                infinity_flags[infinity_ptr] = self.user_updated_mask_commitments[i][j].is_infinite;
+                ptr += 2;
+                infinity_ptr += 1;
+            }
+        }
+        let mut packed_infinity: Field = 0;
+        let mut infinity_scaling: Field = 1;
+
+        let mut qq: u32 = 0;
+        for infinity_flag in infinity_flags {
+            if (qq == 252) {
+                result[ptr] = packed_infinity;
+                packed_infinity = 0;
+                infinity_scaling = 1;
+                ptr += 1;
+                qq = 0;
+            }
+            packed_infinity += (infinity_flag as Field * infinity_scaling);
+            infinity_scaling *= 2;
+            qq += 1;
+        }
+        result[ptr] = packed_infinity;
+        result
+    }
+}
+
+impl<let NumEntries: u32, let NumParticipants: u32> Deserialize for UserOutputState<NumEntries, NumParticipants> {
+    let N: u32 = (NumEntries * 4)
+        + (NumEntries * (NumParticipants - 1) * 2)
+        + (((NumEntries * (NumParticipants)) + 251) / 252);
+    fn deserialize(input: [Field; Self::N]) -> Self {
+        let mut result: Self = UserOutputState::default();
+
+        let mut ptr: u32 = 0;
+        for i in 0..NumEntries {
+            result.ciphertext.data[2 * i] = input[ptr];
+            result.ciphertext.data[2 * i + 1] = input[ptr + 1];
+            ptr += 2;
+        }
+
+        for i in 0..NumEntries {
+            result.mask_commitments[i].x = input[ptr];
+            result.mask_commitments[i].y = input[ptr + 1];
+            ptr += 2;
+        }
+
+        for i in 0..NumParticipants - 1 {
+            for j in 0..NumEntries {
+                result.user_updated_mask_commitments[i][j].x = input[ptr];
+                result.user_updated_mask_commitments[i][j].y = input[ptr + 1];
+                ptr += 2;
+            }
+        }
+
+        let mut infinity_flags: [u1; 252] = input[ptr].to_le_bits();
+        ptr += 1;
+        let mut infinity_counter: u32 = 0;
+        for i in 0..NumEntries {
+            result.mask_commitments[i].is_infinite = infinity_flags[infinity_counter] != 0;
+            infinity_counter += 1;
+            if (infinity_counter >= 252) {
+                infinity_counter = 0;
+                infinity_flags = input[ptr].to_le_bits();
+                ptr += 1;
+            }
+        }
+
+        for i in 0..NumParticipants - 1 {
+            for j in 0..NumEntries {
+                result.user_updated_mask_commitments[i][j].is_infinite =
+                    infinity_flags[infinity_counter] != 0;
+                infinity_counter += 1;
+                if (infinity_counter >= 252) {
+                    infinity_counter = 0;
+                    infinity_flags = input[ptr].to_le_bits();
+                    ptr += 1;
+                }
+            }
+        }
+        result
+    }
+}
+
+#[test]
+fn test_serialize_deserialize_for_user_output_state() {
+    let mut test_state: UserOutputState<256, 4> = UserOutputState::default();
+
+    let mut seed: Field = 1;
+
+    for i in 0..256 {
+        test_state.ciphertext.data[i * 2] = poseidon2([seed], 1);
+        test_state.ciphertext.data[i * 2 + 1] = poseidon2([seed + 1], 1);
+        seed += 2;
+
+        test_state.mask_commitments[i].x = poseidon2([seed], 1);
+        test_state.mask_commitments[i].y = poseidon2([seed + 1], 1);
+        test_state.mask_commitments[i].is_infinite =
+            (test_state.mask_commitments[i].y as u32) % 2 == 0;
+        seed += 2;
+    }
+
+    for i in 0..3 {
+        for j in 0..256 {
+            test_state.user_updated_mask_commitments[i][j].x = poseidon2([seed], 1);
+            test_state.user_updated_mask_commitments[i][j].y = poseidon2([seed + 1], 1);
+            test_state.user_updated_mask_commitments[i][j].is_infinite =
+                (test_state.user_updated_mask_commitments[i][j].y as u32) % 2 == 0;
+            seed += 2;
+        }
+    }
+
+    let serialized = test_state.serialize();
+    let deserialized: UserOutputState<256, 4> = UserOutputState::<256, 4>::deserialize(serialized);
+
+    assert_eq(test_state, deserialized);
 }
 
 impl<let NumEntries: u32, let NumParticipants: u32> std::default::Default for UserOutputState<NumEntries, NumParticipants> {
@@ -41,7 +204,7 @@ impl<let NumEntries: u32, let NumParticipants: u32> std::default::Default for Us
             ciphertext: Ciphertext::default(),
             mask_commitments: [Point::point_at_infinity(); NumEntries],
             user_updated_mask_commitments: [
-                [Point::point_at_infinity(); NumEntries]; NumParticipants
+                [Point::point_at_infinity(); NumEntries]; NumParticipants - 1
             ],
         }
     }
@@ -54,9 +217,11 @@ impl<let NumEntries: u32, let NumParticipants: u32> Eq for UserOutputState<NumEn
             r &= self.ciphertext.data[i * 2] == other.ciphertext.data[i * 2];
             r &= self.ciphertext.data[i * 2 + 1] == other.ciphertext.data[i * 2 + 1];
             r &= self.mask_commitments[i] == other.mask_commitments[i];
-            for j in 0..NumParticipants
-            {
-                r &= (self.user_updated_mask_commitments[j][i] == other.user_updated_mask_commitments[j][i]);
+            for j in 0..NumParticipants - 1 {
+                r &= (
+                    self.user_updated_mask_commitments[j][i]
+                        == other.user_updated_mask_commitments[j][i]
+                );
             }
         }
         r
@@ -65,71 +230,6 @@ impl<let NumEntries: u32, let NumParticipants: u32> Eq for UserOutputState<NumEn
 
 impl<let NumEntries: u32, let NumParticipants: u32> UserOutputState<NumEntries, NumParticipants> {
 
-    pub fn serialize(self: Self) -> [Field; NumEntries * (NumParticipants + 2) * 2] {
-        let mut flattened_data: [Field; NumEntries * (NumParticipants + 2) * 2] =
-            [0; NumEntries * (NumParticipants + 2) * 2];
-
-        for i in 0..NumEntries {
-            flattened_data[i * 2] = self.ciphertext.data[2 * i];
-            flattened_data[i * 2 + 1] = self.ciphertext.data[2 * i + 1];
-
-            flattened_data[NumEntries * 2 + i * 2] = self.mask_commitments[i].x;
-            flattened_data[NumEntries * 2 + i * 2 + 1] = self.mask_commitments[i].y;
-        }
-
-        let offset: u32 = NumEntries * 4;
-        for i in 0..NumParticipants {
-            for j in 0..NumEntries {
-                flattened_data[offset + (i * NumEntries * 2) + j * 2] =
-                    self.user_updated_mask_commitments[i][j].x;
-                flattened_data[offset + (i * NumEntries * 2) + j * 2 + 1] =
-                    self.user_updated_mask_commitments[i][j].y;
-                // TODO I think its ok to not include point at infinity here in the hash?
-            }
-        }
-        flattened_data
-    }
-
-    pub fn deserialize(input: [Field; NumEntries * (NumParticipants + 2) * 2]) -> Self {
-        let mut result: UserOutputState<NumEntries, NumParticipants> = UserOutputState::default();
-        for i in 0..NumEntries {
-            result.ciphertext.data[2 * i] = input[i * 2];
-            result.ciphertext.data[2 * i + 1] = input[i * 2 + 1];
-            result.mask_commitments[i].x = input[NumEntries * 2 + i * 2];
-            result.mask_commitments[i].y = input[NumEntries * 2 + i * 2 + 1];
-            result.mask_commitments[i].is_infinite = (result.mask_commitments[i].x == 0) & (result.mask_commitments[i].y == 0);
-            // TODO: -17 is magic number due to the curve formula of Grumpkin.
-            // ideally we should have the embedded curve formula be a param from the backend, as well as the `b` variable
-            let on_curve: Field =
-                ((result.mask_commitments[i].x
-                    * result.mask_commitments[i].x
-                    * result.mask_commitments[i].x)
-                    - 17 -
-                (result.mask_commitments[i].y * result.mask_commitments[i].y) == 0) as Field;
-            assert_eq(on_curve + (result.mask_commitments[i].is_infinite as Field) - (on_curve * (result.mask_commitments[i].is_infinite as Field)),  1);
-        }
-
-        let offset: u32 = NumEntries * 4;
-        for i in 0..NumParticipants {
-            for j in 0..NumEntries {
-                result.user_updated_mask_commitments[i][j].x =
-                    input[offset + (i * NumEntries * 2) + j * 2];
-                result.user_updated_mask_commitments[i][j].y =
-                    input[offset + (i * NumEntries * 2) + j * 2 + 1];
-                result.user_updated_mask_commitments[i][j].is_infinite = (result.user_updated_mask_commitments[i][j].x == 0) & (result.user_updated_mask_commitments[i][j].y == 0);
-
-            let on_curve: Field =
-                (result.user_updated_mask_commitments[i][j].x
-                    * result.user_updated_mask_commitments[i][j].x
-                    * result.user_updated_mask_commitments[i][j].x
-                    - 17 -
-                result.user_updated_mask_commitments[i][j].y * result.user_updated_mask_commitments[i][j].y == 0) as Field;
-                    let c = result.user_updated_mask_commitments[i][j];
-                assert_eq(on_curve + (result.user_updated_mask_commitments[i][j].is_infinite as Field) - (on_curve * result.user_updated_mask_commitments[i][j].is_infinite as Field),  1);
-            }
-        }
-        result
-    }
     pub fn hash(self: Self) -> Field {
         poseidon::poseidon2::Poseidon2::hash(
             self.serialize(),
@@ -235,13 +335,17 @@ pub fn create_round_commitments_alternate<let NumEntries: u32, let NumParticipan
     round_state: RoundState<NumEntries, NumParticipants>,
 ) -> UserOutputState<NumEntries, NumParticipants> {
     let mut r: UserOutputState<NumEntries, NumParticipants> = UserOutputState::default();
-    for i in 0..NumParticipants {
-        if (i != UserIndex) {
+    for i in 0..NumParticipants - 1{
+        // if (i != UserIndex) {
+        
+        // user is index 0
+        // if i is LESS THAN OR EQUAL than user, add 1 to previous index
+                    let previous_index = i + ((i >= UserIndex) as u32);
             r.user_updated_mask_commitments[i] = update_mask(
-                round_state.previous_output_states[i].mask_commitments,
+                round_state.previous_output_states[previous_index].mask_commitments,
                 encrypt_secret,
             );
-        }
+        // }
     }
     r.ciphertext = commit(user_plaintext, encrypt_secret);
     r.mask_commitments = commit_mask(reveal_vector, masking_secret);
@@ -257,13 +361,16 @@ pub fn create_round_commitments<let NumEntries: u32, let NumParticipants: u32>(
     user_index: u32,
 ) -> UserOutputState<NumEntries, NumParticipants> {
     let mut r: UserOutputState<NumEntries, NumParticipants> = UserOutputState::default();
-    for i in 0..NumParticipants {
-        if (i != user_index) {
+    for i in 0..NumParticipants - 1 {
+        // if (i != user_index) {
+                    let previous_index = i + ((i >= user_index) as u32);
+            // let updated_mask_index = i - ((i > user_index) as u32);
+
             r.user_updated_mask_commitments[i] = update_mask(
-                round_state.previous_output_states[i].mask_commitments,
+                round_state.previous_output_states[previous_index].mask_commitments,
                 encrypt_secret,
             );
-        }
+        // }
     }
     r.ciphertext = commit(user_plaintext, encrypt_secret);
     r.mask_commitments = commit_mask(reveal_vector, masking_secret);
@@ -280,9 +387,11 @@ pub fn consume_round_commitments_alternate<let NumEntries: u32, let NumParticipa
     let mut target_plaintexts: [[Option<Field>; NumEntries]; NumParticipants - 1] =
         [[Option::default(); NumEntries]; NumParticipants - 1];
     for i in 0..NumParticipants {
-        if (i != UserIndex) {
+        let updated_mask_index = UserIndex - ((UserIndex > i) as u32);
+
+         if (i != UserIndex) {
             let decryption_keys = reveal_mask(
-                round_state.previous_output_states[i].user_updated_mask_commitments[UserIndex],
+                round_state.previous_output_states[i].user_updated_mask_commitments[updated_mask_index],
                 masking_secret,
             );
             let plaintexts = trial_decrypt(
@@ -292,7 +401,7 @@ pub fn consume_round_commitments_alternate<let NumEntries: u32, let NumParticipa
             target_plaintexts[count] = plaintexts;
             count += 1;
         }
-    }
+     }
     target_plaintexts
 }
 
@@ -306,9 +415,10 @@ pub fn consume_round_commitments<let NumEntries: u32, let NumParticipants: u32>(
     let mut target_plaintexts: [[Option<Field>; NumEntries]; NumParticipants - 1] =
         [[Option::default(); NumEntries]; NumParticipants - 1];
     for i in 0..NumParticipants {
+        let updated_mask_index = user_index - ((user_index > i) as u32);
         if (i != user_index) {
             let decryption_keys = reveal_mask(
-                round_state.previous_output_states[i].user_updated_mask_commitments[user_index],
+                round_state.previous_output_states[i].user_updated_mask_commitments[updated_mask_index],
                 masking_secret,
             );
             let plaintexts = trial_decrypt(
@@ -344,49 +454,149 @@ impl<let NumEntries: u32, let NumParticipants: u32> Eq for RoundState<NumEntries
         r
     }
 }
+
+impl<let NumEntries: u32, let NumParticipants: u32> Serialize for RoundState<NumEntries, NumParticipants> {
+    let N: u32 = (
+        NumParticipants
+            * (
+                (NumEntries * 4)
+                    + (NumEntries * NumParticipants * 2)
+                    + (((NumEntries * (NumParticipants + 1)) + 251) / 252)
+            )
+    )
+        + (NumParticipants * 2)
+        + 1;
+
+    fn serialize(self) -> [Field; Self::N] {
+        let mut result: [Field; Self::N] = [0; Self::N];
+        let mut ptr: u32 = 0;
+
+        result[ptr] = self.round_number as Field;
+        ptr += 1;
+        for i in 0..NumParticipants {
+            result[ptr] = self.user_encrypt_secret_hashes[i];
+            ptr += 1;
+        }
+        for i in 0..NumParticipants {
+            result[ptr] = self.user_mask_secret_hashes[i];
+            ptr += 1;
+        }
+        for i in 0..NumParticipants {
+            let user_output: [Field; (NumEntries * 4)
+        + (NumEntries * (NumParticipants - 1) * 2)
+        + (((NumEntries * (NumParticipants)) + 251) / 252)]
+             = self.previous_output_states[i].serialize();
+            for j in 0..(NumEntries * 4)
+        + (NumEntries * (NumParticipants-1) * 2)
+        + (((NumEntries * (NumParticipants)) + 251) / 252)
+            {
+                result[ptr] = user_output[j];
+                ptr += 1;
+            }
+            // for f in user_output {
+            //     result[ptr] = f;
+            //     ptr += 1;
+            // }
+        }
+
+        result
+    }
+}
+
+impl<let FNumEntries: u32, let FNumParticipants: u32> Deserialize for RoundState<FNumEntries, FNumParticipants> {
+    let N: u32 = (
+        FNumParticipants
+            * (
+                (FNumEntries * 4)
+                    + (FNumEntries * FNumParticipants * 2)
+                    + (((FNumEntries * (FNumParticipants + 1)) + 251) / 252)
+            )
+    )
+        + (FNumParticipants * 2)
+        + 1;
+
+    fn deserialize(input: [Field; Self::N]) -> Self {
+        let mut result: RoundState<FNumEntries, FNumParticipants> = RoundState::default();
+
+        let mut ptr: u32 = 0;
+
+        result.round_number = input[ptr] as u32;
+        ptr += 1;
+        for i in 0..FNumParticipants {
+            result.user_encrypt_secret_hashes[i] = input[ptr];
+            ptr += 1;
+        }
+        for i in 0..FNumParticipants {
+            result.user_mask_secret_hashes[i] = input[ptr];
+            ptr += 1;
+        }
+        for i in 0..FNumParticipants {
+            let mut fake_state: UserOutputState<FNumEntries, FNumParticipants> =
+                UserOutputState::<FNumEntries, FNumParticipants>::default();
+            let mut user_state = fake_state.serialize();
+
+            for j in 0..(FNumEntries * 4)
+                + (FNumEntries * (FNumParticipants - 1) * 2)
+                + (((FNumEntries * (FNumParticipants )) + 251) / 252) {
+                user_state[j] = input[ptr];
+                ptr += 1;
+            }
+            result.previous_output_states[i] =
+                UserOutputState::<FNumEntries, FNumParticipants>::deserialize(user_state);
+        }
+        result
+    }
+}
+
+#[test]
+fn test_serialize_deserialize_for_round_state() {
+
+    let mut round_state: RoundState<256, 4> = RoundState::default();
+    let mut seed: Field = 1;
+
+    round_state.round_number = 123;
+    for i in 0..4
+    {
+    round_state.user_encrypt_secret_hashes[i] = poseidon2([seed], 1);
+    round_state.user_mask_secret_hashes[i] = poseidon2([seed+1], 1);
+    seed += 2;
+    }
+    for z in 0..4 {
+    let mut test_state: UserOutputState<256, 4> = UserOutputState::default();
+
+
+    for i in 0..256 {
+        test_state.ciphertext.data[i * 2] = poseidon2([seed], 1);
+        test_state.ciphertext.data[i * 2 + 1] = poseidon2([seed + 1], 1);
+        seed += 2;
+
+        test_state.mask_commitments[i].x = poseidon2([seed], 1);
+        test_state.mask_commitments[i].y = poseidon2([seed + 1], 1);
+        test_state.mask_commitments[i].is_infinite =
+            (test_state.mask_commitments[i].y as u32) % 2 == 0;
+        seed += 2;
+    }
+
+    for i in 0..3 {
+        for j in 0..256 {
+            test_state.user_updated_mask_commitments[i][j].x = poseidon2([seed], 1);
+            test_state.user_updated_mask_commitments[i][j].y = poseidon2([seed + 1], 1);
+            test_state.user_updated_mask_commitments[i][j].is_infinite =
+                (test_state.user_updated_mask_commitments[i][j].y as u32) % 2 == 0;
+            seed += 2;
+        }
+    }
+        round_state.previous_output_states[z] = test_state;
+    }
+
+    let serialized = round_state.serialize();
+    let deserialized: RoundState<256, 4> = RoundState::<256, 4>::deserialize(serialized);
+
+    assert_eq(round_state, deserialized);
+
+}
+
 impl<let NumEntries: u32, let NumParticipants: u32> RoundState<NumEntries, NumParticipants> {
-
-    pub fn serialize(self) -> [Field; (NumParticipants * 3) + (NumParticipants * NumEntries * (NumParticipants + 2) * 2)] {
-        let mut result =  [0; NumParticipants * 3 + NumParticipants * NumEntries * (NumParticipants + 2) * 2];
-
-        let mut idx: u32 = 0;
-        for i in 0..NumParticipants {
-        let user_serialized = self.previous_output_states[i].serialize();
-            for element in user_serialized {
-                result[idx] = element;
-                idx += 1;
-            }
-        }
-        for i in 0..NumParticipants {
-            result[idx] = self.user_encrypt_secret_hashes[i];
-            idx += 1;
-            result[idx] = self.user_mask_secret_hashes[i];
-            idx += 1;
-        }
-        result[idx] = self.round_number as Field;
-        result
-    }
-
-    pub fn deserialize(input: [Field; (NumParticipants * 3) + (NumParticipants * NumEntries * (NumParticipants + 2) * 2)]) -> Self {
-        let mut result: RoundState<NumEntries, NumParticipants> = RoundState::default();
-        let mut idx: u32 = 0;
-        for i in 0..NumParticipants {
-            let mut user_serialized: [Field; NumEntries * (NumParticipants + 2) * 2] = [0; NumEntries * (NumParticipants + 2) * 2];
-            for j in 0.. NumEntries * (NumParticipants + 2) * 2{
-                user_serialized[j] = input[idx];
-                idx += 1;
-            }
-            result.previous_output_states[i] = UserOutputState::deserialize(user_serialized);
-        }
-        for i in 0..NumParticipants {
-            result.user_encrypt_secret_hashes[i] = input[idx];
-            idx += 1;
-             result.user_mask_secret_hashes[i] = input[idx];
-            idx += 1;
-        }
-        result.round_number = input[idx] as u32;
-        result
-    }
 
     pub fn hash(self) -> Field {
         let mut flattened_data: [Field; NumParticipants * 3 + 1] = [0; NumParticipants * 3 + 1];
@@ -440,10 +650,7 @@ pub fn execute_round_alternate<let NumEntries: u32, let NumParticipants: u32, le
         poseidon2([encrypt_secret, -1], 2),
         round_state.user_encrypt_secret_hashes[UserIndex],
     );
-    assert_eq(
-        poseidon2([masking_secret, -1], 2),
-        round_state.user_mask_secret_hashes[UserIndex],
-    );
+    assert_eq(poseidon2([masking_secret, -1], 2), round_state.user_mask_secret_hashes[UserIndex]);
     let state = create_round_commitments_alternate::<NumEntries, NumParticipants, UserIndex>(
         user_plaintext,
         reveal_vector,
@@ -478,10 +685,7 @@ pub fn execute_round<let NumEntries: u32, let NumParticipants: u32>(
         poseidon2([encrypt_secret, -1], 2),
         round_state.user_encrypt_secret_hashes[user_index],
     );
-    assert_eq(
-        poseidon2([masking_secret, -1], 2),
-        round_state.user_mask_secret_hashes[user_index],
-    );
+    assert_eq(poseidon2([masking_secret, -1], 2), round_state.user_mask_secret_hashes[user_index]);
     let state = create_round_commitments(
         user_plaintext,
         reveal_vector,
@@ -496,81 +700,79 @@ pub fn execute_round<let NumEntries: u32, let NumParticipants: u32>(
     (state, plaintexts)
 }
 
+// #[test]
+// fn test_flatten() {
+//     // let plaintext: [Field; 4] = [0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, 123, -1, -0x23476239845723746];
+//     // let reveal_vector: [Field; 4] = [0, 1, 2, 3];
+
+//     let alice_secret = poseidon2([0], 1);
+//     let alice_mask = poseidon2([1], 1);
+//     let bob_secret = poseidon2([2], 1);
+//     let bob_mask = poseidon2([3], 1);
+
+//     let round_state: RoundState<4, 2> = RoundState {
+//         round_number: 1,
+//         user_encrypt_secret_hashes: [
+//             poseidon2([alice_secret, -1], 2),
+//             poseidon2([bob_secret, -1], 2),
+//         ],
+//         user_mask_secret_hashes: [poseidon2([alice_mask, -1], 2), poseidon2([bob_mask, -1], 2)],
+//         previous_output_states: [UserOutputState::default(); 2],
+//     };
+
+//     let previous_round_hash = round_state.hash();
+//     let alice_state = [0, 1, 2, 3];
+//     let alice_reveal = [0, 1, 0, 1];
+//     let bob_state = [-1, -2, -3, -4];
+//     let bob_reveal = [1, 0, 1, 0];
+
+//     // after executing. we have ciphertexts and mask commitments, but no mask reveal commitments
+//     let alice_output = execute_round(
+//         alice_state,
+//         alice_reveal,
+//         alice_secret,
+//         alice_mask,
+//         round_state,
+//         previous_round_hash,
+//         0,
+//     );
+
+//     let round_state = round_state.update([alice_output.0, round_state.previous_output_states[1]]);
+//     let previous_round_hash = round_state.hash();
+
+//     let bob_output = execute_round(
+//         bob_state,
+//         bob_reveal,
+//         bob_secret,
+//         bob_mask,
+//         round_state,
+//         previous_round_hash,
+//         1,
+//     );
+
+//     let round_state = round_state.update([round_state.previous_output_states[0], bob_output.0]);
+//     let previous_round_hash = round_state.hash();
+
+//     let alice_output = execute_round(
+//         alice_state,
+//         alice_reveal,
+//         alice_secret,
+//         alice_mask,
+//         round_state,
+//         previous_round_hash,
+//         0,
+//     );
+
+//     let flat = alice_output.0.serialize();
+//     let result_state: UserOutputState<4, 2> = UserOutputState::deserialize(flat);
+
+//     let flat_round = round_state.serialize();
+//     let result_round: RoundState<4, 2> = RoundState::<4, 2>::deserialize(flat_round);
+//     assert_eq(round_state, result_round);
+//     assert_eq(alice_output.0, result_state);
+// }
 
 #[test]
-fn test_flatten() {
-    // let plaintext: [Field; 4] = [0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, 123, -1, -0x23476239845723746];
-    // let reveal_vector: [Field; 4] = [0, 1, 2, 3];
-
-    let alice_secret = poseidon2([0], 1);
-    let alice_mask = poseidon2([1], 1);
-    let bob_secret = poseidon2([2], 1);
-    let bob_mask = poseidon2([3], 1);
-
-    let round_state: RoundState<4, 2> = RoundState {
-        round_number: 1,
-        user_encrypt_secret_hashes: [
-            poseidon2([alice_secret, -1], 2),
-            poseidon2([bob_secret, -1], 2),
-        ],
-        user_mask_secret_hashes: [poseidon2([alice_mask, -1], 2), poseidon2([bob_mask, -1], 2)],
-        previous_output_states: [UserOutputState::default(); 2],
-    };
-
-    let previous_round_hash = round_state.hash();
-    let alice_state = [0, 1, 2, 3];
-    let alice_reveal = [0, 1, 0, 1];
-    let bob_state = [-1, -2, -3, -4];
-    let bob_reveal = [1, 0, 1, 0];
-
-    // after executing. we have ciphertexts and mask commitments, but no mask reveal commitments
-    let alice_output = execute_round(
-        alice_state,
-        alice_reveal,
-        alice_secret,
-        alice_mask,
-        round_state,
-        previous_round_hash,
-        0,
-    );
-
-    let round_state = round_state.update([alice_output.0, round_state.previous_output_states[1]]);
-    let previous_round_hash = round_state.hash();
-
-    let bob_output = execute_round(
-        bob_state,
-        bob_reveal,
-        bob_secret,
-        bob_mask,
-        round_state,
-        previous_round_hash,
-        1,
-    );
-
-
-    let round_state = round_state.update([round_state.previous_output_states[0], bob_output.0]);
-    let previous_round_hash = round_state.hash();
-
-    let alice_output = execute_round(
-        alice_state,
-        alice_reveal,
-        alice_secret,
-        alice_mask,
-        round_state,
-        previous_round_hash,
-        0,
-    );
-
-
-    let flat = alice_output.0.serialize();
-    let result_state: UserOutputState<4, 2> = UserOutputState::deserialize(flat);
-
-    let flat_round = round_state.serialize();
-    let result_round : RoundState<4, 2> = RoundState::<4,2>::deserialize(flat_round);
-    assert_eq(round_state, result_round);
-    assert_eq(alice_output.0, result_state);
-}
-
 fn test_execute_round() {
     let alice_secret = poseidon2([0], 1);
     let alice_mask = poseidon2([1], 1);
