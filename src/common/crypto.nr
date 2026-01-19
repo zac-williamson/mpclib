@@ -41,8 +41,10 @@ pub(crate) fn symmetric_decrypt(
     r
 }
 
+use protocol_types::traits::{Deserialize, Serialize};
 use std::embedded_curve_ops::EmbeddedCurvePoint as Point;
 
+#[derive(Serialize, Deserialize)]
 pub struct Ciphertext<let N: u32> {
     pub data: [Field; N * 2],
 }
