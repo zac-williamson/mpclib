@@ -1,6 +1,6 @@
 use poseidon::poseidon2::Poseidon2::hash as poseidon2;
 use std::embedded_curve_ops::{
-    embedded_curve_add_unsafe, EmbeddedCurvePoint, EmbeddedCurveScalar, multi_scalar_mul,
+    embedded_curve_add, EmbeddedCurvePoint, EmbeddedCurveScalar, multi_scalar_mul,
 };
 
 use crate::common::crypto::{Ciphertext, expand_secret, symmetric_encrypt, trial_decrypt};
@@ -141,9 +141,9 @@ pub fn commit_mask<let N: u32>(reveal_vector: [Field; N], masking_secret: Field)
     for i in 0..N {
         masking_keys[i] = multi_scalar_mul([G], [EmbeddedCurveScalar::from_field(secrets[i])]);
 
-        // we can use an unsafe add op here because masking_keys[i] is a function of [G], and colliding with [H] would require solving the dlog problem
-        let alternative_masking_key = embedded_curve_add_unsafe(masking_keys[i], H);
+        let alternative_masking_key = embedded_curve_add(masking_keys[i], H);
 
+        // no need to check points at infinity here because masking_keys[i] is a function of [G], and colliding with [H] would require solving the dlog problem
         masking_keys[i].x = (masking_keys[i].x - alternative_masking_key.x) * reveal_vector[i]
             + alternative_masking_key.x;
         masking_keys[i].y = (masking_keys[i].y - alternative_masking_key.y) * reveal_vector[i]
